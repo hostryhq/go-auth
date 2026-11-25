@@ -99,6 +99,8 @@ type Spec struct {
 	Ticket       string
 	Operation    string // approval tokens
 	BodyHash     string // approval tokens
+	TargetHash   string // approval tokens: auth.TargetHash(method, path, BodyHash)
+	Label        string // approval tokens: human-readable subject
 	TTL          time.Duration
 }
 
@@ -121,7 +123,7 @@ func (i *Issuer) Claims(s Spec) auth.Claims {
 	c := auth.Claims{
 		Issuer: i.Name, Audience: auth.Audience{i.Audience}, Realm: i.Realm, Type: s.Type,
 		Subject: s.Subject, DeviceID: s.Device, SessionID: s.Session, AMR: s.AMR, Grants: s.Grants,
-		Mode: s.Mode, Ticket: s.Ticket, Operation: s.Operation, BodyHash: s.BodyHash,
+		Mode: s.Mode, Ticket: s.Ticket, Operation: s.Operation, BodyHash: s.BodyHash, TargetHash: s.TargetHash, Label: s.Label,
 		IssuedAt: now.Unix(), ExpiresAt: now.Add(s.TTL).Unix(), JTI: "jti-" + strconv.Itoa(n),
 	}
 	if i.Realm == auth.RealmTenant {

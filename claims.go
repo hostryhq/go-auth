@@ -108,6 +108,8 @@ type Claims struct {
 	Ticket       string    `json:"ticket,omitempty"`        // support tokens: ticket reference (audit)
 	Operation    string    `json:"op,omitempty"`            // approval tokens: operation id
 	BodyHash     string    `json:"bh,omitempty"`            // approval tokens: base64url sha256 of the body
+	TargetHash   string    `json:"th,omitempty"`            // approval tokens: hex sha256 of METHOD\npath\nbh (SR-H1)
+	Label        string    `json:"lbl,omitempty"`           // approval tokens: human-readable subject shown to the approver
 	IssuedAt     int64     `json:"iat"`
 	NotBefore    int64     `json:"nbf,omitempty"`
 	ExpiresAt    int64     `json:"exp"`

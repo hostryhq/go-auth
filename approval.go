@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +72,20 @@ type ApprovalChecker struct {
 func BodyHash(body []byte) string {
 	sum := sha256.Sum256(body)
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// TargetHash is the value an approval token's th claim must carry: lowercase
+// hex SHA-256 over METHOD, a newline, the concrete request path (ids filled
+// in, escaped form), a newline and the body hash (BodyHash). It binds the
+// approval to one resource, not only to an operation id (SR-H1).
+func TargetHash(method, path, bodyHash string) string {
+	sum := sha256.Sum256([]byte(strings.ToUpper(method) + "\n" + path + "\n" + bodyHash))
+	return hex.EncodeToString(sum[:])
+}
+
+// RequestTargetHash computes TargetHash for r, given the body hash already computed.
+func RequestTargetHash(r *http.Request, bodyHash string) string {
+	return TargetHash(r.Method, r.URL.EscapedPath(), bodyHash)
 }
 
 var errApproval = errors.New("approval refused")
@@ -136,6 +152,10 @@ func (a *ApprovalChecker) Check(r *http.Request, p Principal, op string) error {
 	}
 	if subtle.ConstantTimeCompare([]byte(c.BodyHash), []byte(BodyHash(body))) != 1 {
 		return errApproval // same rule as VerifyBodyHash, on the bytes already read
+	}
+	// SR-H1: method, concrete path and body; a token without th is refused.
+	if c.TargetHash == "" || subtle.ConstantTimeCompare([]byte(c.TargetHash), []byte(RequestTargetHash(r, BodyHash(body)))) != 1 {
+		return errApproval
 	}
 	if !a.Used.Use(c.JTI, time.Unix(c.ExpiresAt, 0)) {
 		return errApproval

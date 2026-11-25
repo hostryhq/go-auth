@@ -422,7 +422,7 @@ func TestNewDeviceCaution(t *testing.T) {
 		t.Fatalf("strong_only inside the window without approval: %d", got)
 	}
 	approve := func(mut func(*authtest.Spec)) string {
-		s := authtest.Spec{Type: auth.TypeApproval, Tenant: tenantA, Session: "s-1", Operation: "addMember", BodyHash: auth.BodyHash([]byte(body))}
+		s := authtest.Spec{Type: auth.TypeApproval, Tenant: tenantA, Session: "s-1", Operation: "addMember", BodyHash: auth.BodyHash([]byte(body)), TargetHash: auth.TargetHash("POST", "/v1/members", auth.BodyHash([]byte(body))), Label: "Add member Asha"}
 		if mut != nil {
 			mut(&s)
 		}
@@ -432,8 +432,15 @@ func TestNewDeviceCaution(t *testing.T) {
 		"another operation": approve(func(s *authtest.Spec) { s.Operation = "editTax" }),
 		"another body":      approve(func(s *authtest.Spec) { s.BodyHash = auth.BodyHash([]byte(`{"name":"Eve"}`)) }),
 		"another session":   approve(func(s *authtest.Spec) { s.Session = "s-2" }),
-		"another tenant":    approve(func(s *authtest.Spec) { s.Tenant = testkit.TenantB }),
-		"an access token":   user,
+		"another path": approve(func(s *authtest.Spec) {
+			s.TargetHash = auth.TargetHash("POST", "/v1/members/other", auth.BodyHash([]byte(body)))
+		}),
+		"another method": approve(func(s *authtest.Spec) {
+			s.TargetHash = auth.TargetHash("PUT", "/v1/members", auth.BodyHash([]byte(body)))
+		}),
+		"no target":       approve(func(s *authtest.Spec) { s.TargetHash = "" }),
+		"another tenant":  approve(func(s *authtest.Spec) { s.Tenant = testkit.TenantB }),
+		"an access token": user,
 	} {
 		if got := post(tok); got != 403 {
 			t.Errorf("approval for %s accepted: %d", name, got)
