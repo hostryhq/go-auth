@@ -22,6 +22,8 @@ const (
 	DeviceRevoke     = "device.revoke"
 	SupportCodeNew   = "support.code.create"
 	TaxSettingsEdit  = "tax.settings.edit"
+	MenuImport       = "menu.import"
+	CatalogImport    = "catalog.import"
 	AdminOrgRead     = "admin.org.read"
 	AdminDeviceRead  = "admin.device.read"
 	AdminDeviceRevok = "admin.device.revoke"
@@ -43,6 +45,8 @@ func Catalogue() *auth.Catalogue {
 		auth.Permission{Name: DeviceRevoke, Owner: "identity", StrongOnly: true, OwnerGrant: true},
 		auth.Permission{Name: SupportCodeNew, Owner: "identity", StrongOnly: true, OwnerGrant: true},
 		auth.Permission{Name: TaxSettingsEdit, Owner: "tenancy", StrongOnly: true, OwnerGrant: true, Sensitive: true},
+		auth.Permission{Name: MenuImport, Owner: "catalog"},
+		auth.Permission{Name: CatalogImport, Owner: "catalog", SupportActable: true},
 		auth.Permission{Name: AdminOrgRead, Owner: "tenancy"},
 		auth.Permission{Name: AdminDeviceRead, Owner: "identity"},
 		auth.Permission{Name: AdminDeviceRevok, Owner: "identity"},

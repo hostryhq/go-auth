@@ -137,6 +137,7 @@ func newHarness(t *testing.T) *harness {
 	g.Handle(m, "GET /v1/forgetful", auth.Policy{OperationID: "forgetful", Permission: authtest.ReportView}, forgetful)
 	g.Handle(m, "POST /v1/members", auth.Policy{OperationID: "addMember", Permission: authtest.MemberAdd}, plain)
 	g.Handle(m, "POST /v1/exports", auth.Policy{OperationID: "exportReports", Permission: authtest.ReportView, StepUp: true}, plain)
+	g.Handle(m, "POST /v1/imports", auth.Policy{OperationID: "createImport", Permission: authtest.MenuImport, StepUp: true, WidenedBy: authtest.CatalogImport}, audited)
 	g.Handle(m, "POST /v1/tax", auth.Policy{OperationID: "editTax", Permission: authtest.TaxSettingsEdit, StepUp: true}, plain)
 	g.Handle(m, "POST /v1/sync/quarantine", auth.Policy{OperationID: "quarantineUpload", AllowDrain: true}, plain)
 	g.Handle(m, "POST /internal/v1/series", auth.Policy{OperationID: "issueSeries", ServiceOnly: true, Internal: true, Callers: []string{"identity"}}, plain)

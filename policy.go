@@ -21,6 +21,13 @@ type Policy struct {
 	OperationID string
 	// Permission is x-permission.
 	Permission string
+	// WidenedBy is x-permission-widened-by (A2.5): a support_actable
+	// permission that also opens this route to a support token in act mode,
+	// which can never hold Permission itself (it is step-up or not
+	// support_actable) and never satisfies step-up. The support token must come
+	// with the admin service token, as on every support request. Other callers
+	// are unaffected.
+	WidenedBy string
 	// StepUp is x-step-up: a fresh OTP is needed (auth_time within 10 minutes).
 	StepUp bool
 	// Public is an explicit "no user authentication" declaration. Alone it is
@@ -139,6 +146,12 @@ func (p Policy) Validate(cat *Catalogue) error {
 	if p.Permission != "" {
 		if _, ok := cat.Get(p.Permission); !ok {
 			return fmt.Errorf("auth: policy %q: permission %q is not in the catalogue", p.OperationID, p.Permission)
+		}
+	}
+	if p.WidenedBy != "" {
+		w, ok := cat.Get(p.WidenedBy)
+		if p.Permission == "" || !ok || !w.SupportActable || p.WidenedBy == p.Permission || p.realm() != RealmTenant {
+			return fmt.Errorf("auth: policy %q: x-permission-widened-by must name a support_actable catalogue permission other than x-permission, on a tenant-realm permission route", p.OperationID)
 		}
 	}
 	if p.realm() == RealmVendor {
