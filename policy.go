@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -22,12 +23,27 @@ type Policy struct {
 	Permission string
 	// StepUp is x-step-up: a fresh OTP is needed (auth_time within 10 minutes).
 	StepUp bool
-	// Public is an explicit "no authentication" declaration, for health and
-	// readiness only. It cannot be combined with anything else.
+	// Public is an explicit "no user authentication" declaration. Alone it is
+	// for health and readiness and cannot be combined with anything else.
+	// Together with Internal and Callers it is x-permission: public with
+	// x-service-callers (vendor sign-in, setup): a valid service token from a
+	// named caller (or "*", any registered service) is required, and a user,
+	// vendor or support token on the request is refused.
 	Public bool
+	// Authenticated is x-permission: authenticated: any valid access token of
+	// the route's realm, and no permission. Token-type rules, new-device
+	// caution and the vendor audit gate still apply; step-up does not.
+	Authenticated bool
+	// PlatformAudit marks an organisation-less vendor route (identity and
+	// tenancy routes that concern no organisation). Vendor access is recorded
+	// through Guard.PlatformAudit with WithPlatformAuditedTx, with no tenant
+	// and no pseudo-tenant (ADR-0013 V5 item 3).
+	PlatformAudit bool
 	// Internal marks an /internal/v1 operation. Callers is x-service-callers.
 	Internal bool
-	Callers  []string
+	// Callers lists the issuers allowed on an internal route. The single
+	// entry "*" (AnyCaller) accepts any service with a valid service token.
+	Callers []string
 	// ServiceOnly is an internal operation done by a service on its own
 	// authority (asynchronous work); no user token is expected.
 	ServiceOnly bool
@@ -44,6 +60,17 @@ type Policy struct {
 	DirectoryClass  bool
 }
 
+// AnyCaller in Policy.Callers accepts every service holding a valid service
+// token for this service. It must be the only entry.
+const AnyCaller = "*"
+
+func (p Policy) callerAllowed(issuer string) bool {
+	return slices.Contains(p.Callers, issuer) || slices.Contains(p.Callers, AnyCaller)
+}
+
+// publicCallers is a service-token-only route with no user credential.
+func (p Policy) publicCallers() bool { return p.Public && p.Internal }
+
 func (p Policy) realm() Realm {
 	if p.Realm == "" {
 		return RealmTenant
@@ -56,8 +83,20 @@ func (p Policy) realm() Realm {
 // permission (or an explicit Public, ServiceOnly or AllowDrain declaration).
 func (p Policy) Validate(cat *Catalogue) error {
 	if p.Public {
-		if p.Permission != "" || p.StepUp || p.Internal || p.ServiceOnly || p.AllowDrain || p.Realm != "" {
+		if p.Permission != "" || p.StepUp || p.ServiceOnly || p.AllowDrain || p.Authenticated || p.PlatformAudit || p.NoTenant || p.Realm != "" || p.VendorAuditNone || p.DirectoryClass {
 			return fmt.Errorf("auth: policy %q: Public cannot be combined with other declarations", p.OperationID)
+		}
+		if p.Internal {
+			if p.OperationID == "" {
+				return fmt.Errorf("auth: policy without an operation id")
+			}
+			if len(p.Callers) == 0 {
+				return fmt.Errorf("auth: policy %q: public internal operation without x-service-callers", p.OperationID)
+			}
+			return validateCallers(p)
+		}
+		if len(p.Callers) > 0 {
+			return fmt.Errorf("auth: policy %q: Public with callers needs an internal operation", p.OperationID)
 		}
 		return nil
 	}
@@ -68,7 +107,7 @@ func (p Policy) Validate(cat *Catalogue) error {
 		return fmt.Errorf("auth: policy %q: unknown realm %q", p.OperationID, p.Realm)
 	}
 	modes := 0
-	for _, b := range []bool{p.Permission != "", p.ServiceOnly, p.AllowDrain} {
+	for _, b := range []bool{p.Permission != "", p.ServiceOnly, p.AllowDrain, p.Authenticated} {
 		if b {
 			modes++
 		}
@@ -81,6 +120,12 @@ func (p Policy) Validate(cat *Catalogue) error {
 	}
 	if !p.Internal && len(p.Callers) > 0 {
 		return fmt.Errorf("auth: policy %q: callers declared on a non-internal operation", p.OperationID)
+	}
+	if err := validateCallers(p); err != nil {
+		return err
+	}
+	if p.Authenticated && p.StepUp {
+		return fmt.Errorf("auth: policy %q: step-up needs a permission; not allowed on an authenticated route", p.OperationID)
 	}
 	if p.ServiceOnly && (!p.Internal || p.realm() != RealmTenant) {
 		return fmt.Errorf("auth: policy %q: ServiceOnly needs an internal tenant-realm operation", p.OperationID)
@@ -97,12 +142,25 @@ func (p Policy) Validate(cat *Catalogue) error {
 		}
 	}
 	if p.realm() == RealmVendor {
-		if !p.Internal || !strings.HasPrefix(p.Permission, "admin.") {
-			return fmt.Errorf("auth: policy %q: vendor routes are internal and need an admin.* permission", p.OperationID)
+		if !p.Internal || !(p.Authenticated || strings.HasPrefix(p.Permission, "admin.")) {
+			return fmt.Errorf("auth: policy %q: vendor routes are internal and need an admin.* permission or authenticated", p.OperationID)
 		}
+	}
+	if p.PlatformAudit && (p.realm() != RealmVendor || p.VendorAuditNone) {
+		return fmt.Errorf("auth: policy %q: PlatformAudit is for vendor-realm routes that write an audit row", p.OperationID)
 	}
 	if p.VendorAuditNone && !(p.DirectoryClass && p.realm() == RealmVendor) {
 		return fmt.Errorf("auth: policy %q: x-vendor-audit: none is allowed on directory-class vendor operations only", p.OperationID)
+	}
+	return nil
+}
+
+func validateCallers(p Policy) error {
+	if slices.Contains(p.Callers, AnyCaller) && len(p.Callers) != 1 {
+		return fmt.Errorf("auth: policy %q: %q must be the only entry in callers", p.OperationID, AnyCaller)
+	}
+	if slices.Contains(p.Callers, "") {
+		return fmt.Errorf("auth: policy %q: empty caller name", p.OperationID)
 	}
 	return nil
 }

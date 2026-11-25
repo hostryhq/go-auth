@@ -51,11 +51,26 @@ type VendorAuditSink interface {
 	RecordRefused(ctx context.Context, e VendorAccessEntry) error
 }
 
+// PlatformAuditSink is the tenant-less counterpart of VendorAuditSink for
+// vendor actions that concern no organisation (vendor sign-in is the owner's
+// own; identity and tenancy routes on vendor users, setup, directory-wide
+// operations). The row has no tenant and no pseudo-tenant: the table behind
+// it is a platform table, not an RLS tenant table (ADR-0013 V5 item 3).
+type PlatformAuditSink interface {
+	// RecordPlatformInTx writes the row inside the request's own transaction.
+	// An error fails the transaction (fail closed).
+	RecordPlatformInTx(ctx context.Context, tx tenancy.Execer, e VendorAccessEntry) error
+	// RecordPlatformRefused writes a "refused" row in a short transaction of
+	// its own, for a request go-auth refused before the handler.
+	RecordPlatformRefused(ctx context.Context, e VendorAccessEntry) error
+}
+
 // auditState is the per-request audit record being built. The guard creates
 // it for requests on a vendor user's authority.
 type auditState struct {
 	mu       sync.Mutex
 	sink     VendorAuditSink
+	platform PlatformAuditSink // set instead of sink on a Policy.PlatformAudit route
 	entry    VendorAccessEntry
 	none     bool // x-vendor-audit: none (directory reads)
 	recorded bool
@@ -106,7 +121,7 @@ func WithAuditedTx(ctx context.Context, db tenancy.TxBeginner, fn func(ctx conte
 		return tenancy.WithTx(ctx, db, fn)
 	}
 	st := auditFrom(ctx)
-	if st == nil || st.sink == nil {
+	if st == nil || st.sink == nil { // also a platform route: wrong helper, fail closed
 		return apperr.New(apperr.Internal, "audit.unavailable", "")
 	}
 	if st.none {
@@ -137,6 +152,51 @@ func WithAuditedTx(ctx context.Context, db tenancy.TxBeginner, fn func(ctx conte
 		st.mu.Unlock()
 		return nil
 	})
+}
+
+// WithPlatformAuditedTx is the helper for Policy.PlatformAudit routes: a plain
+// transaction with no tenant context, plus the platform vendor access row in
+// the same transaction for a vendor user's request. Same guarantees as
+// WithAuditedTx: the row is written after the handler's own work and before
+// commit, a failed write rolls everything back (fail closed), and one row is
+// written per request. Calling it on a route that is not PlatformAudit, or
+// without a vendor principal's audit state, fails closed for vendor actors;
+// for other principals it is a plain transaction.
+func WithPlatformAuditedTx(ctx context.Context, db tenancy.TxBeginner, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	p, ok := PrincipalFrom(ctx)
+	var st *auditState
+	if ok && p.IsVendorActor() {
+		st = auditFrom(ctx)
+		if st == nil || st.platform == nil {
+			return apperr.New(apperr.Internal, "audit.unavailable", "")
+		}
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := fn(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if st != nil {
+		st.mu.Lock()
+		done := st.recorded
+		e := st.entry
+		st.mu.Unlock()
+		if !done {
+			e.Outcome = OutcomeOK
+			e.TenantID = ""
+			if err := st.platform.RecordPlatformInTx(ctx, tx, e); err != nil {
+				_ = tx.Rollback()
+				return apperr.Wrap(apperr.Internal, "audit.write_failed", "", err)
+			}
+			st.mu.Lock()
+			st.recorded = true
+			st.mu.Unlock()
+		}
+	}
+	return tx.Commit()
 }
 
 // VendorTenant returns a context whose tenancy context is the organisation a

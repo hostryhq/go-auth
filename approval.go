@@ -74,6 +74,46 @@ func BodyHash(body []byte) string {
 
 var errApproval = errors.New("approval refused")
 
+// readBody returns the exact request body bytes as sent and restores r.Body
+// so the handler can read it again. A body over 1 MiB is refused.
+func readBody(r *http.Request) ([]byte, error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxApprovalBody+1))
+	if err != nil || len(body) > maxApprovalBody {
+		return nil, errApproval
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
+}
+
+// RequestBodyHash computes the approval body hash (bh) of r: SHA-256 over the
+// exact request body bytes as sent, no re-serialisation, base64url without
+// padding; an empty body hashes the empty string. The body is read and
+// restored. Use it on the device or admin side that requests an approval.
+func RequestBodyHash(r *http.Request) (string, error) {
+	body, err := readBody(r)
+	if err != nil {
+		return "", err
+	}
+	return BodyHash(body), nil
+}
+
+// VerifyBodyHash checks that the body of r hashes to want (the bh claim of an
+// approval token). It reads and restores the body and compares in constant
+// time; a mismatch returns the same refusal as any other approval failure.
+func VerifyBodyHash(r *http.Request, want string) error {
+	got, err := RequestBodyHash(r)
+	if err != nil {
+		return err
+	}
+	if subtle.ConstantTimeCompare([]byte(want), []byte(got)) != 1 {
+		return errApproval
+	}
+	return nil
+}
+
 // Check verifies the request's approval token for principal p and operation op.
 // It reads the body (bounded) and restores it for the handler.
 func (a *ApprovalChecker) Check(r *http.Request, p Principal, op string) error {
@@ -87,19 +127,15 @@ func (a *ApprovalChecker) Check(r *http.Request, p Principal, op string) error {
 	if err != nil {
 		return err
 	}
-	var body []byte
-	if r.Body != nil {
-		body, err = io.ReadAll(io.LimitReader(r.Body, maxApprovalBody+1))
-		if err != nil || len(body) > maxApprovalBody {
-			return errApproval
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
+	body, err := readBody(r)
+	if err != nil {
+		return err
 	}
 	if c.TenantID != p.TenantID || c.SessionID == "" || c.SessionID != p.SessionID || c.Operation != op || op == "" {
 		return errApproval
 	}
 	if subtle.ConstantTimeCompare([]byte(c.BodyHash), []byte(BodyHash(body))) != 1 {
-		return errApproval
+		return errApproval // same rule as VerifyBodyHash, on the bytes already read
 	}
 	if !a.Used.Use(c.JTI, time.Unix(c.ExpiresAt, 0)) {
 		return errApproval

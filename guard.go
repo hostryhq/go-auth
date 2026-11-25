@@ -38,10 +38,14 @@ type Guard struct {
 	Approvals      *ApprovalChecker
 	// Audit is the service's vendor_access_log hook. A service that accepts
 	// vendor or support tokens must set it; without it those requests are refused.
-	Audit        VendorAuditSink
-	Clock        clock.Clock
-	StepUpWindow time.Duration
-	Log          *slog.Logger
+	Audit VendorAuditSink
+	// PlatformAudit is the tenant-less sink for Policy.PlatformAudit routes
+	// (vendor actions that concern no organisation). Without it those routes
+	// refuse vendor requests (fail closed).
+	PlatformAudit PlatformAuditSink
+	Clock         clock.Clock
+	StepUpWindow  time.Duration
+	Log           *slog.Logger
 }
 
 func (g *Guard) now() time.Time {
@@ -70,7 +74,7 @@ func (g *Guard) supportCallers() []string {
 // (or the reverse), or when the guard lacks what the policy needs.
 func (g *Guard) Handle(mux *http.ServeMux, pattern string, p Policy, h http.Handler) {
 	path := patternPath(pattern)
-	if strings.HasPrefix(path, InternalPrefix) != p.Internal && !p.Public {
+	if strings.HasPrefix(path, InternalPrefix) != p.Internal && (!p.Public || p.Internal) {
 		panic("auth: route " + pattern + ": internal routes must live under " + InternalPrefix + " and be declared internal, and the reverse")
 	}
 	mux.Handle(pattern, g.Wrap(p, h))
@@ -83,6 +87,9 @@ func (g *Guard) Wrap(p Policy, h http.Handler) http.Handler {
 	}
 	if err := p.Validate(g.Catalogue); err != nil {
 		panic(err.Error())
+	}
+	if p.Public && p.Internal && g.Services == nil {
+		panic("auth: guard has no service verifier for internal route " + p.OperationID)
 	}
 	if !p.Public {
 		if g.Tenant == nil && !p.Internal {
@@ -97,7 +104,7 @@ func (g *Guard) Wrap(p Policy, h http.Handler) http.Handler {
 	}
 	authz := &Authorizer{Catalogue: g.Catalogue, Clock: g.Clock}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if p.Public {
+		if p.Public && !p.Internal {
 			h.ServeHTTP(w, r)
 			return
 		}
@@ -144,13 +151,24 @@ func (g *Guard) serve(w http.ResponseWriter, r *http.Request, p Policy, authz *A
 			refused("internal route without service token")
 			return
 		}
-		if !slices.Contains(p.Callers, svc.Issuer) {
+		if !p.callerAllowed(svc.Issuer) {
 			g.log().WarnContext(ctx, "caller not on x-service-callers", "operation", p.OperationID, "caller", svc.Issuer)
 			fail(apperr.New(apperr.Forbidden, "auth.caller_not_allowed", "caller not allowed"))
 			return
 		}
 	}
 
+	if p.publicCallers() {
+		// Service token only: any user-style credential on the request is an error.
+		if r.Header.Get("Authorization") != "" {
+			refused("user credential on a service-only public route")
+			return
+		}
+		q := p
+		q.NoTenant = true
+		g.serveService(w, r, ctx, q, svc, next, fail)
+		return
+	}
 	if p.ServiceOnly {
 		g.serveService(w, r, ctx, p, svc, next, fail)
 		return
@@ -203,19 +221,35 @@ func (g *Guard) serve(w http.ResponseWriter, r *http.Request, p Policy, authz *A
 
 	var gate *auditState
 	if pr.IsVendorActor() {
-		if g.Audit == nil {
+		switch {
+		case p.PlatformAudit:
+			if g.PlatformAudit == nil {
+				g.log().ErrorContext(ctx, "platform vendor route but no platform audit sink configured", "operation", p.OperationID)
+				fail(apperr.New(apperr.Internal, "audit.unavailable", ""))
+				return
+			}
+			gate = &auditState{platform: g.PlatformAudit, entry: newEntry(r, pr, g.now(), p.OperationID)}
+			gate.entry.TenantID = ""
+		case g.Audit == nil:
 			g.log().ErrorContext(ctx, "vendor-authority request but no audit sink configured", "operation", p.OperationID)
 			fail(apperr.New(apperr.Internal, "audit.unavailable", ""))
 			return
+		default:
+			gate = &auditState{sink: g.Audit, entry: newEntry(r, pr, g.now(), p.OperationID), none: p.VendorAuditNone}
 		}
-		gate = &auditState{sink: g.Audit, entry: newEntry(r, pr, g.now(), p.OperationID), none: p.VendorAuditNone}
 		ctx = authctx.Set(ctx, authctx.Audit, gate)
 	}
 	denyAudited := func(err error) {
 		if gate != nil && !gate.none {
 			e := gate.entry
 			e.Outcome = OutcomeRefused
-			if rerr := g.Audit.RecordRefused(ctx, e); rerr != nil {
+			var rerr error
+			if gate.platform != nil {
+				rerr = gate.platform.RecordPlatformRefused(ctx, e)
+			} else {
+				rerr = g.Audit.RecordRefused(ctx, e)
+			}
+			if rerr != nil {
 				g.log().ErrorContext(ctx, "could not record refused vendor request", "operation", p.OperationID, "error", rerr)
 			}
 		}
@@ -256,6 +290,9 @@ func (g *Guard) typeAllowedOnRoute(p Policy, c *Claims, svc *Claims) bool {
 func (g *Guard) authorize(r *http.Request, p Policy, authz *Authorizer, pr *Principal) error {
 	if p.AllowDrain {
 		return nil // type already pinned to drain; the route needs no permission
+	}
+	if p.Authenticated {
+		return nil // any valid token of the realm; verified and type-checked above
 	}
 	def, _ := g.Catalogue.Get(p.Permission)
 	now := g.now()

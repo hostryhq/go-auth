@@ -28,6 +28,8 @@ err = auth.Require(ctx, "bill.cancel", bill.OutletID) // outlet from the stored 
 
 Vendor-authority requests (vendor token on a vendor route, support token on a tenant route) must do their database work through `auth.WithAuditedTx`, which writes the service's `vendor_access_log` row in the same transaction; a success response without that row is replaced by a 500.
 
+Policy modes beyond `Permission`: `Authenticated: true` (x-permission: authenticated; any valid token of the realm, no permission, no step-up); `Public: true, Internal: true, Callers: [...]` (public with x-service-callers; service token only, a user or vendor token on the request is refused; `auth.AnyCaller` = `"*"` accepts any registered service and must be the only entry); `PlatformAudit: true` on organisation-less vendor routes (set `Guard.PlatformAudit` to a `PlatformAuditSink`, do the work in `auth.WithPlatformAuditedTx`; the row has no tenant). Approval body hash: `auth.RequestBodyHash` / `auth.VerifyBodyHash` (SHA-256 over the exact body bytes as sent; body is restored).
+
 ## Conventions fixed here (to be recorded in api-specs)
 
 - User, vendor and support tokens travel in `Authorization: Bearer`; the 60-second service token in `Hostry-Service-Token` (so a call made for a user carries both); an approval token in `Hostry-Approval`.

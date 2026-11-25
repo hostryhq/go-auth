@@ -92,3 +92,42 @@ func (m *MemorySink) Snapshot() []auth.VendorAccessEntry {
 	defer m.mu.Unlock()
 	return append([]auth.VendorAccessEntry(nil), m.Entries...)
 }
+
+// MemoryPlatformSink is an in-memory auth.PlatformAuditSink with failure injection.
+type MemoryPlatformSink struct {
+	mu      sync.Mutex
+	Entries []auth.VendorAccessEntry
+	// FailInTx makes RecordPlatformInTx fail, to prove the request fails closed.
+	FailInTx bool
+	// FailRefused makes RecordPlatformRefused fail.
+	FailRefused bool
+}
+
+// RecordPlatformInTx implements auth.PlatformAuditSink.
+func (m *MemoryPlatformSink) RecordPlatformInTx(_ context.Context, _ tenancy.Execer, e auth.VendorAccessEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailInTx {
+		return errors.New("injected audit failure")
+	}
+	m.Entries = append(m.Entries, e)
+	return nil
+}
+
+// RecordPlatformRefused implements auth.PlatformAuditSink.
+func (m *MemoryPlatformSink) RecordPlatformRefused(_ context.Context, e auth.VendorAccessEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailRefused {
+		return errors.New("injected audit failure")
+	}
+	m.Entries = append(m.Entries, e)
+	return nil
+}
+
+// Snapshot returns a copy of the recorded entries.
+func (m *MemoryPlatformSink) Snapshot() []auth.VendorAccessEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]auth.VendorAccessEntry(nil), m.Entries...)
+}
