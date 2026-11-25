@@ -34,3 +34,7 @@ coverage/
 target/
 src-tauri/target/
 src-tauri/gen/
+
+# Local workspace (points at ../go-common)
+go.work
+go.work.sum
