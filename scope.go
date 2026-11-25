@@ -12,12 +12,13 @@ import (
 
 // Error codes returned by the authorisation checks.
 const (
-	CodeUnauthenticated   = "auth.unauthenticated"
-	CodePermissionDenied  = "auth.permission_denied"
-	CodeApprovalRequired  = "approval_required" // A2.2
-	CodeStepUpRequired    = "auth.step_up_required"
-	CodeResourceNotFound  = "resource.not_found"
-	CodeGrantNotPermitted = "grant_not_permitted" // A2.4 G7 (used by grantlimit)
+	CodeUnauthenticated       = "auth.unauthenticated"
+	CodePermissionDenied      = "auth.permission_denied"
+	CodeApprovalRequired      = "approval_required"       // A2.2
+	CodeStrongSessionRequired = "strong_session_required" // strong_only in a pin or device session (RM-M5)
+	CodeStepUpRequired        = "auth.step_up_required"
+	CodeResourceNotFound      = "resource.not_found"
+	CodeGrantNotPermitted     = "grant_not_permitted" // A2.4 G7 (used by grantlimit)
 )
 
 // OutletScope is the set of outlets a caller may reach for one permission:
@@ -141,7 +142,13 @@ func ceilingDenies(p Principal, def Permission) bool {
 // and the new-device caution. It fails closed: an unknown permission, a
 // drain token or a ceiling gives an error, never a wider scope.
 func (a *Authorizer) Scope(p Principal, perm string) (OutletScope, error) {
+	if p.Type == TypeSupport && p.Mode == ModeAct && p.widenBy != "" && perm == p.widenPerm {
+		perm = p.widenBy // x-permission-widened-by: the route's act-mode permission
+	}
 	def, ok := a.Catalogue.Get(perm)
+	if ok && def.StrongOnly && (p.Type == TypePin || p.Type == TypeDevice) {
+		return OutletScope{}, apperr.New(apperr.Forbidden, CodeStrongSessionRequired, "a strong session is required for this operation")
+	}
 	if !ok || ceilingDenies(p, def) {
 		return OutletScope{}, denied()
 	}

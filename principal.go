@@ -32,6 +32,11 @@ type Principal struct {
 	// the request, if any.
 	ServiceCaller string
 
+	// widenPerm and widenBy are set by the guard from the route's policy
+	// (x-permission-widened-by): in act mode a support token is judged on
+	// widenBy where the route asks for widenPerm.
+	widenPerm, widenBy string
+
 	raw string // the bearer token, kept only to pass on to callees; never logged
 }
 

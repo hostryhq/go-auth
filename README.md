@@ -45,3 +45,9 @@ go run ./cmd/scopelint -tables tables.json ./repository ./service   # in a servi
 ```
 
 Local development against an unmerged `go-common`: use an uncommitted `go.work` (git-ignored) that lists `.` and `../go-common`. Private modules need `GOPRIVATE=github.com/hostryhq/*`.
+
+## Phase 2 additions
+
+- `GrantVerifier` (grant.go): the one verifier of vendor approval grants (ADR-0014 A2.6). ES256 under the vendor key set by `kid`; checks iss, realm, aud, typ, kind, org, approver (equals the bearer vendor subject, differs from the requester), lifetime (at most 300 s), exp, then the executor SubjectHash recomputation and the single-use hook (`GrantUsed`; leave it nil to consume the jti in the action transaction). Refusals are 403 `grant.required|invalid|expired|subject_mismatch|used`.
+- `Policy.WidenedBy` (`x-permission-widened-by`): a `support_actable` permission that opens a step-up route to a support token in act mode, with the admin service token; step-up is not asked of it.
+- `strong_session_required` (403): a `strong_only` permission asked in a pin or device session. Services stop rewriting it.

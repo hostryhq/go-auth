@@ -294,6 +294,17 @@ func (g *Guard) authorize(r *http.Request, p Policy, authz *Authorizer, pr *Prin
 	if p.Authenticated {
 		return nil // any valid token of the realm; verified and type-checked above
 	}
+	if pr.Type == TypeSupport && pr.Mode == ModeAct && p.WidenedBy != "" {
+		// x-permission-widened-by: act mode is judged on the widening permission;
+		// step-up is not asked (a support token never satisfies it) and the admin
+		// service token is required explicitly, whatever typeAllowedOnRoute did.
+		if !slices.Contains(g.supportCallers(), pr.ServiceCaller) {
+			return denied()
+		}
+		pr.widenPerm, pr.widenBy = p.Permission, p.WidenedBy
+		_, err := authz.Scope(*pr, p.Permission)
+		return err
+	}
 	def, _ := g.Catalogue.Get(p.Permission)
 	now := g.now()
 	if pr.UnderCaution(now) && (def.StrongOnly || p.StepUp) {
